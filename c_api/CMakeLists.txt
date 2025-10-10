@@ -14,6 +14,7 @@ set(FAISS_C_SRC
   Clustering_c.cpp
   IndexFlat_c.cpp
   IndexIVFFlat_c.cpp
+  IndexIVFHNSW_c.cpp
   IndexIVF_c.cpp
   IndexLSH_c.cpp
   IndexPreTransform_c.cpp

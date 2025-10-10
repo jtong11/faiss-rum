@@ -23,6 +23,7 @@ set(FAISS_SRC
   IndexIVF.cpp
   IndexIVFAdditiveQuantizer.cpp
   IndexIVFFlat.cpp
+  IndexIVFHNSW.cpp
   IndexIVFPQ.cpp
   IndexIVFFastScan.cpp
   IndexIVFAdditiveQuantizerFastScan.cpp
