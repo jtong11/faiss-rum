@@ -15,6 +15,7 @@
 /bin/
 /c_api/bin/
 /c_api/gpu/bin/
+/c_api/rust/target/
 /tests/test
 /tests/gtest/
 faiss/python/swigfaiss_avx2.swig

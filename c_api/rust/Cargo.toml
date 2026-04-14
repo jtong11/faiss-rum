@@ -1,0 +1,13 @@
+[package]
+name = "faiss-rabitq-rs"
+version = "0.1.0"
+edition = "2021"
+links = "faiss_c"
+
+[lib]
+name = "faiss_rabitq"
+path = "src/lib.rs"
+
+[dependencies]
+libloading = "0.8.9"
+
