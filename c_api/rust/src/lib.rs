@@ -275,22 +275,21 @@ fn ensure_ivf_rabitq_support(api: &FaissApi) -> Result<(), FaissError> {
     Ok(())
 }
 
-pub struct IvfRaBitQIndex {
+struct FaissIndexHandle {
     api: Arc<FaissApi>,
     ptr: *mut FaissIndexOpaque,
     dimension: usize,
 }
 
-impl IvfRaBitQIndex {
-    pub fn new(dimension: usize, nlist: usize, metric: MetricType) -> Result<Self, FaissError> {
+impl FaissIndexHandle {
+    fn new_from_factory(
+        dimension: usize,
+        factory: &str,
+        metric: MetricType,
+    ) -> Result<Self, FaissError> {
         if dimension == 0 {
             return Err(FaissError::InvalidArgument(
                 "dimension must be greater than 0".to_owned(),
-            ));
-        }
-        if nlist == 0 {
-            return Err(FaissError::InvalidArgument(
-                "nlist must be greater than 0".to_owned(),
             ));
         }
         if dimension > c_int::MAX as usize {
@@ -300,10 +299,8 @@ impl IvfRaBitQIndex {
         }
 
         let api = FaissApi::load()?;
-        ensure_ivf_rabitq_support(&api)?;
-
-        let description = CString::new(format!("IVF{nlist},RaBitQ"))
-            .expect("factory string does not contain interior NUL");
+        let description =
+            CString::new(factory).expect("factory string does not contain interior NUL");
 
         let mut index_ptr: *mut FaissIndexOpaque = ptr::null_mut();
         unsafe {
@@ -335,15 +332,15 @@ impl IvfRaBitQIndex {
         })
     }
 
-    pub fn dimension(&self) -> usize {
+    fn dimension(&self) -> usize {
         self.dimension
     }
 
-    pub fn ntotal(&self) -> usize {
+    fn ntotal(&self) -> usize {
         unsafe { (self.api.index_ntotal)(self.ptr) as usize }
     }
 
-    pub fn set_nprobe(&mut self, nprobe: usize) -> Result<(), FaissError> {
+    fn set_nprobe(&mut self, nprobe: usize) -> Result<(), FaissError> {
         if nprobe == 0 {
             return Err(FaissError::InvalidArgument(
                 "nprobe must be greater than 0".to_owned(),
@@ -362,17 +359,17 @@ impl IvfRaBitQIndex {
         Ok(())
     }
 
-    pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+    fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         let n = self.validate_vector_matrix(vectors)?;
         unsafe { self.api.check_error((self.api.index_train)(self.ptr, n, vectors.as_ptr())) }
     }
 
-    pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+    fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         let n = self.validate_vector_matrix(vectors)?;
         unsafe { self.api.check_error((self.api.index_add)(self.ptr, n, vectors.as_ptr())) }
     }
 
-    pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
+    fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
         if k == 0 {
             return Err(FaissError::InvalidArgument(
                 "k must be greater than 0".to_owned(),
@@ -430,12 +427,146 @@ impl IvfRaBitQIndex {
     }
 }
 
-impl Drop for IvfRaBitQIndex {
+impl Drop for FaissIndexHandle {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe { (self.api.index_free)(self.ptr) };
             self.ptr = ptr::null_mut();
         }
+    }
+}
+
+pub struct IvfRaBitQIndex {
+    inner: FaissIndexHandle,
+}
+
+impl IvfRaBitQIndex {
+    pub fn new(dimension: usize, nlist: usize, metric: MetricType) -> Result<Self, FaissError> {
+        if nlist == 0 {
+            return Err(FaissError::InvalidArgument(
+                "nlist must be greater than 0".to_owned(),
+            ));
+        }
+
+        let api = FaissApi::load()?;
+        ensure_ivf_rabitq_support(&api)?;
+        drop(api);
+
+        Ok(Self {
+            inner: FaissIndexHandle::new_from_factory(
+                dimension,
+                &format!("IVF{nlist},RaBitQ"),
+                metric,
+            )?,
+        })
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    pub fn ntotal(&self) -> usize {
+        self.inner.ntotal()
+    }
+
+    pub fn set_nprobe(&mut self, nprobe: usize) -> Result<(), FaissError> {
+        self.inner.set_nprobe(nprobe)
+    }
+
+    pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.train(vectors)
+    }
+
+    pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.add(vectors)
+    }
+
+    pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
+        self.inner.search(queries, k)
+    }
+}
+
+pub struct IvfSq8Index {
+    inner: FaissIndexHandle,
+}
+
+impl IvfSq8Index {
+    pub fn new(dimension: usize, nlist: usize, metric: MetricType) -> Result<Self, FaissError> {
+        if nlist == 0 {
+            return Err(FaissError::InvalidArgument(
+                "nlist must be greater than 0".to_owned(),
+            ));
+        }
+
+        Ok(Self {
+            inner: FaissIndexHandle::new_from_factory(
+                dimension,
+                &format!("IVF{nlist},SQ8"),
+                metric,
+            )?,
+        })
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    pub fn ntotal(&self) -> usize {
+        self.inner.ntotal()
+    }
+
+    pub fn set_nprobe(&mut self, nprobe: usize) -> Result<(), FaissError> {
+        self.inner.set_nprobe(nprobe)
+    }
+
+    pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.train(vectors)
+    }
+
+    pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.add(vectors)
+    }
+
+    pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
+        self.inner.search(queries, k)
+    }
+}
+
+pub struct HnswIndex {
+    inner: FaissIndexHandle,
+}
+
+impl HnswIndex {
+    pub fn new(dimension: usize, m: usize, metric: MetricType) -> Result<Self, FaissError> {
+        if m == 0 {
+            return Err(FaissError::InvalidArgument(
+                "hnsw M must be greater than 0".to_owned(),
+            ));
+        }
+
+        Ok(Self {
+            inner: FaissIndexHandle::new_from_factory(dimension, &format!("HNSW{m}"), metric)?,
+        })
+    }
+
+    pub fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    pub fn ntotal(&self) -> usize {
+        self.inner.ntotal()
+    }
+
+    pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.train(vectors)
+    }
+
+    pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
+        self.inner.add(vectors)
+    }
+
+    pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
+        self.inner.search(queries, k)
     }
 }
 
@@ -499,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_configuration() {
+    fn rejects_invalid_rabitq_configuration() {
         let result = IvfRaBitQIndex::new(8, 0, MetricType::L2);
         assert!(matches!(result, Err(FaissError::InvalidArgument(_))));
     }
@@ -540,6 +671,106 @@ mod tests {
         assert!(results.distances.iter().all(|distance| distance.is_finite()));
 
         for (query_row, expected_id) in [0_i64, 64_i64, 255_i64].into_iter().enumerate() {
+            assert!(
+                results.labels_for_query(query_row).contains(&expected_id),
+                "expected id {expected_id} to appear in top-{k} for query row {query_row}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_ivf_sq8_configuration() {
+        let result = IvfSq8Index::new(8, 0, MetricType::L2);
+        assert!(matches!(result, Err(FaissError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn train_add_and_search_ivf_sq8() -> Result<(), Box<dyn Error>> {
+        let d = 16;
+        let nlist = 8;
+        let nb = 512;
+        let k = 50;
+
+        let mut index = match IvfSq8Index::new(d, nlist, MetricType::L2) {
+            Ok(index) => index,
+            Err(err) if skip_if_library_missing(&err) => {
+                eprintln!("skipping IVF-SQ8 integration test: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+
+        let xb = synthetic_vectors(nb, d);
+        index.train(&xb)?;
+        index.add(&xb)?;
+        index.set_nprobe(nlist)?;
+
+        assert_eq!(index.ntotal(), nb);
+
+        let query_ids = [0_usize, 64_usize, 255_usize];
+        let mut queries = Vec::with_capacity(query_ids.len() * d);
+        for id in query_ids {
+            let start = id * d;
+            queries.extend_from_slice(&xb[start..start + d]);
+        }
+
+        let results = index.search(&queries, k)?;
+        assert_eq!(results.labels.len(), query_ids.len() * k);
+        assert_eq!(results.distances.len(), query_ids.len() * k);
+        assert!(results.distances.iter().all(|distance| distance.is_finite()));
+
+        for (query_row, expected_id) in [0_i64, 64_i64, 255_i64].into_iter().enumerate() {
+            assert!(
+                results.labels_for_query(query_row).contains(&expected_id),
+                "expected id {expected_id} to appear in top-{k} for query row {query_row}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_hnsw_configuration() {
+        let result = HnswIndex::new(8, 0, MetricType::L2);
+        assert!(matches!(result, Err(FaissError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn add_and_search_hnsw() -> Result<(), Box<dyn Error>> {
+        let d = 16;
+        let m = 32;
+        let nb = 512;
+        let k = 64;
+
+        let mut index = match HnswIndex::new(d, m, MetricType::L2) {
+            Ok(index) => index,
+            Err(err) if skip_if_library_missing(&err) => {
+                eprintln!("skipping HNSW integration test: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+
+        let xb = synthetic_vectors(nb, d);
+        index.add(&xb)?;
+
+        assert_eq!(index.ntotal(), nb);
+
+        let query_ids = [1_usize, 64_usize, 255_usize];
+        let mut queries = Vec::with_capacity(query_ids.len() * d);
+        for id in query_ids {
+            let start = id * d;
+            queries.extend_from_slice(&xb[start..start + d]);
+        }
+
+        let results = index.search(&queries, k)?;
+        assert_eq!(results.labels.len(), query_ids.len() * k);
+        assert_eq!(results.distances.len(), query_ids.len() * k);
+        assert!(results.distances.iter().all(|distance| distance.is_finite()));
+
+        for (query_row, expected_id) in [1_i64, 64_i64, 255_i64].into_iter().enumerate() {
             assert!(
                 results.labels_for_query(query_row).contains(&expected_id),
                 "expected id {expected_id} to appear in top-{k} for query row {query_row}"

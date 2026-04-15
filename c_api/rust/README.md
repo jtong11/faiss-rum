@@ -1,9 +1,11 @@
-# Rust IVF-RaBitQ example via Faiss C API
+# Rust index examples via Faiss C API
 
-This crate demonstrates calling Faiss from Rust and creating an IVF-RaBitQ
-index with an index factory string:
+This crate demonstrates calling Faiss from Rust and creating indexes with
+factory strings:
 
 - `IVF{nlist},RaBitQ`
+- `IVF{nlist},SQ8`
+- `HNSW{m}`
 
 The implementation performs a runtime version check and requires:
 
@@ -22,11 +24,11 @@ Then run tests for this Rust crate:
 
 ```bash
 cd c_api/rust
-cargo test
+FAISS_C_LIB_PATH=/absolute/path/to/libfaiss_c.so cargo test
 ```
 
 If `libfaiss_c` is not found automatically, set:
 
 ```bash
-export FAISS_C_LIB_DIR=/path/to/build/c_api
+export FAISS_C_LIB_PATH=/path/to/build/c_api/libfaiss_c.so
 ```
