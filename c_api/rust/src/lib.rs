@@ -123,12 +123,8 @@ struct FaissIndexIVFOpaque {
 
 type FnGetVersion = unsafe extern "C" fn() -> *const c_char;
 type FnGetLastError = unsafe extern "C" fn() -> *const c_char;
-type FnIndexFactory = unsafe extern "C" fn(
-    *mut *mut FaissIndexOpaque,
-    c_int,
-    *const c_char,
-    c_int,
-) -> c_int;
+type FnIndexFactory =
+    unsafe extern "C" fn(*mut *mut FaissIndexOpaque, c_int, *const c_char, c_int) -> c_int;
 type FnIndexFree = unsafe extern "C" fn(*mut FaissIndexOpaque);
 type FnIndexD = unsafe extern "C" fn(*const FaissIndexOpaque) -> c_int;
 type FnIndexNTotal = unsafe extern "C" fn(*const FaissIndexOpaque) -> FaissIdx;
@@ -361,12 +357,18 @@ impl FaissIndexHandle {
 
     fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         let n = self.validate_vector_matrix(vectors)?;
-        unsafe { self.api.check_error((self.api.index_train)(self.ptr, n, vectors.as_ptr())) }
+        unsafe {
+            self.api
+                .check_error((self.api.index_train)(self.ptr, n, vectors.as_ptr()))
+        }
     }
 
     fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         let n = self.validate_vector_matrix(vectors)?;
-        unsafe { self.api.check_error((self.api.index_add)(self.ptr, n, vectors.as_ptr())) }
+        unsafe {
+            self.api
+                .check_error((self.api.index_add)(self.ptr, n, vectors.as_ptr()))
+        }
     }
 
     fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
@@ -668,7 +670,10 @@ mod tests {
         let results = index.search(&queries, k)?;
         assert_eq!(results.labels.len(), query_ids.len() * k);
         assert_eq!(results.distances.len(), query_ids.len() * k);
-        assert!(results.distances.iter().all(|distance| distance.is_finite()));
+        assert!(results
+            .distances
+            .iter()
+            .all(|distance| distance.is_finite()));
 
         for (query_row, expected_id) in [0_i64, 64_i64, 255_i64].into_iter().enumerate() {
             assert!(
@@ -719,7 +724,10 @@ mod tests {
         let results = index.search(&queries, k)?;
         assert_eq!(results.labels.len(), query_ids.len() * k);
         assert_eq!(results.distances.len(), query_ids.len() * k);
-        assert!(results.distances.iter().all(|distance| distance.is_finite()));
+        assert!(results
+            .distances
+            .iter()
+            .all(|distance| distance.is_finite()));
 
         for (query_row, expected_id) in [0_i64, 64_i64, 255_i64].into_iter().enumerate() {
             assert!(
@@ -768,7 +776,10 @@ mod tests {
         let results = index.search(&queries, k)?;
         assert_eq!(results.labels.len(), query_ids.len() * k);
         assert_eq!(results.distances.len(), query_ids.len() * k);
-        assert!(results.distances.iter().all(|distance| distance.is_finite()));
+        assert!(results
+            .distances
+            .iter()
+            .all(|distance| distance.is_finite()));
 
         for (query_row, expected_id) in [1_i64, 64_i64, 255_i64].into_iter().enumerate() {
             assert!(
@@ -780,4 +791,3 @@ mod tests {
         Ok(())
     }
 }
-

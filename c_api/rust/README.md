@@ -32,3 +32,36 @@ If `libfaiss_c` is not found automatically, set:
 ```bash
 export FAISS_C_LIB_PATH=/path/to/build/c_api/libfaiss_c.so
 ```
+
+## Benchmark binary (100,000 embeddings by default)
+
+Run:
+
+```bash
+cd c_api/rust
+FAISS_C_LIB_PATH=/absolute/path/to/libfaiss_c.so cargo run --release --bin benchmark_all
+```
+
+The benchmark runs all three algorithms (IVF-RaBitQ, IVF-SQ8, HNSW) with
+default settings:
+
+- `--embeddings 100000`
+- `--dimension 64`
+- `--queries 1000`
+- `--k 10`
+- `--nlist 1024`
+- `--hnsw-m 32`
+- `--metric l2`
+
+Optional CLI flags:
+
+```bash
+cargo run --release --bin benchmark_all -- \
+  --embeddings 100000 \
+  --dimension 64 \
+  --queries 1000 \
+  --k 10 \
+  --nlist 1024 \
+  --hnsw-m 32 \
+  --metric l2
+```
