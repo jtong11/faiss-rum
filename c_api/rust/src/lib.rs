@@ -333,6 +333,7 @@ struct FaissIndexHandle {
     api: Arc<FaissApi>,
     ptr: *mut FaissIndexOpaque,
     dimension: usize,
+    custom_id_lookup: Option<Vec<i64>>,
 }
 
 impl FaissIndexHandle {
@@ -383,6 +384,7 @@ impl FaissIndexHandle {
             api,
             ptr: index_ptr,
             dimension: index_dimension as usize,
+            custom_id_lookup: None,
         })
     }
 
@@ -427,10 +429,15 @@ impl FaissIndexHandle {
 
     fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         let n = self.validate_vector_matrix(vectors)?;
+        let ntotal_before = self.ntotal() as i64;
         unsafe {
             self.api
                 .check_error((self.api.index_add)(self.ptr, n, vectors.as_ptr()))
+        }?;
+        if let Some(lookup) = self.custom_id_lookup.as_mut() {
+            lookup.extend(ntotal_before..(ntotal_before + n));
         }
+        Ok(())
     }
 
     fn add_with_ids(&mut self, vectors: &[f32], ids: &[i64]) -> Result<(), FaissError> {
@@ -441,13 +448,29 @@ impl FaissIndexHandle {
                 ids.len()
             )));
         }
-        unsafe {
+        let ntotal_before = self.ntotal();
+        let add_result = unsafe {
             self.api.check_error((self.api.index_add_with_ids)(
                 self.ptr,
                 n,
                 vectors.as_ptr(),
                 ids.as_ptr(),
             ))
+        };
+        match add_result {
+            Ok(()) => Ok(()),
+            Err(FaissError::Api(message)) if message.contains("add_with_ids not implemented") => {
+                // Fallback for index types that don't implement add_with_ids in Faiss:
+                // add sequentially and remap search labels back to user-provided IDs.
+                self.add(vectors)?;
+                let lookup = self
+                    .custom_id_lookup
+                    .get_or_insert_with(|| (0..ntotal_before as i64).collect());
+                lookup.truncate(ntotal_before);
+                lookup.extend_from_slice(ids);
+                Ok(())
+            }
+            Err(err) => Err(err),
         }
     }
 
@@ -477,6 +500,16 @@ impl FaissIndexHandle {
                 distances.as_mut_ptr(),
                 labels.as_mut_ptr(),
             ))?;
+        }
+        if let Some(lookup) = &self.custom_id_lookup {
+            for label in &mut labels {
+                if *label >= 0 {
+                    let idx = *label as usize;
+                    if let Some(mapped) = lookup.get(idx) {
+                        *label = *mapped;
+                    }
+                }
+            }
         }
 
         Ok(SearchResult {
