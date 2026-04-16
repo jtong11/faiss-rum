@@ -539,7 +539,18 @@ impl IvfRaBitQIndex {
                 "rabitq nbits must be in range [0, 8]".to_owned(),
             ));
         }
-        self.inner.set_parameter("nbits", f64::from(nbits))
+        match self.inner.set_parameter("nbits", f64::from(nbits)) {
+            Ok(()) => Ok(()),
+            Err(FaissError::Api(message)) if message.contains("could not set parameter nbits") => {
+                Err(FaissError::InvalidArgument(
+                    "loaded libfaiss_c does not support RaBitQ 'nbits' tuning. \
+Rebuild Faiss from this branch (with AutoTune.cpp nbits support) and set \
+FAISS_C_LIB_PATH to that rebuilt libfaiss_c.so."
+                        .to_owned(),
+                ))
+            }
+            Err(other) => Err(other),
+        }
     }
 
     pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
