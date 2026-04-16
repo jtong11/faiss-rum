@@ -22,9 +22,11 @@
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexIDMap.h>
 #include <faiss/IndexIVF.h>
+#include <faiss/IndexIVFRaBitQ.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexIVFPQR.h>
 #include <faiss/IndexPQ.h>
+#include <faiss/IndexRaBitQ.h>
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexRefine.h>
 #include <faiss/IndexShardsIVF.h>
@@ -556,6 +558,17 @@ void ParameterSpace::set_index_parameter(
                 cq->hnsw.efSearch = int(val);
                 return;
             }
+        }
+    }
+
+    if (name == "nbits") {
+        if (DC(IndexRaBitQ)) {
+            ix->qb = int(val);
+            return;
+        }
+        if (DC(IndexIVFRaBitQ)) {
+            ix->qb = int(val);
+            return;
         }
     }
 

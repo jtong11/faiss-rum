@@ -121,6 +121,11 @@ struct FaissIndexIVFOpaque {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+struct FaissParameterSpaceOpaque {
+    _private: [u8; 0],
+}
+
 type FnGetVersion = unsafe extern "C" fn() -> *const c_char;
 type FnGetLastError = unsafe extern "C" fn() -> *const c_char;
 type FnIndexFactory =
@@ -140,6 +145,14 @@ type FnIndexSearch = unsafe extern "C" fn(
 ) -> c_int;
 type FnIndexIVFCast = unsafe extern "C" fn(*mut FaissIndexOpaque) -> *mut FaissIndexIVFOpaque;
 type FnIndexIVFSetNProbe = unsafe extern "C" fn(*mut FaissIndexIVFOpaque, usize);
+type FnParameterSpaceNew = unsafe extern "C" fn(*mut *mut FaissParameterSpaceOpaque) -> c_int;
+type FnParameterSpaceFree = unsafe extern "C" fn(*mut FaissParameterSpaceOpaque);
+type FnParameterSpaceSetIndexParameter = unsafe extern "C" fn(
+    *const FaissParameterSpaceOpaque,
+    *mut FaissIndexOpaque,
+    *const c_char,
+    f64,
+) -> c_int;
 
 struct FaissApi {
     _lib: Library,
@@ -154,6 +167,9 @@ struct FaissApi {
     index_search: FnIndexSearch,
     index_ivf_cast: FnIndexIVFCast,
     index_ivf_set_nprobe: FnIndexIVFSetNProbe,
+    parameter_space_new: FnParameterSpaceNew,
+    parameter_space_free: FnParameterSpaceFree,
+    parameter_space_set_index_parameter: FnParameterSpaceSetIndexParameter,
 }
 
 impl FaissApi {
@@ -211,6 +227,12 @@ impl FaissApi {
             index_search: load_symbol(&lib, b"faiss_Index_search\0")?,
             index_ivf_cast: load_symbol(&lib, b"faiss_IndexIVF_cast\0")?,
             index_ivf_set_nprobe: load_symbol(&lib, b"faiss_IndexIVF_set_nprobe\0")?,
+            parameter_space_new: load_symbol(&lib, b"faiss_ParameterSpace_new\0")?,
+            parameter_space_free: load_symbol(&lib, b"faiss_ParameterSpace_free\0")?,
+            parameter_space_set_index_parameter: load_symbol(
+                &lib,
+                b"faiss_ParameterSpace_set_index_parameter\0",
+            )?,
             _lib: lib,
         })
     }
@@ -244,6 +266,38 @@ impl FaissApi {
             }
             Ok(CStr::from_ptr(version_ptr).to_string_lossy().into_owned())
         }
+    }
+
+    fn set_index_parameter(
+        &self,
+        index: *mut FaissIndexOpaque,
+        name: &str,
+        value: f64,
+    ) -> Result<(), FaissError> {
+        let mut pspace: *mut FaissParameterSpaceOpaque = ptr::null_mut();
+        unsafe { self.check_error((self.parameter_space_new)(&mut pspace))? };
+        if pspace.is_null() {
+            return Err(FaissError::NullPointer(
+                "faiss_ParameterSpace_new succeeded but returned null",
+            ));
+        }
+
+        let result = (|| -> Result<(), FaissError> {
+            let parameter_name = CString::new(name).map_err(|_| {
+                FaissError::InvalidArgument(format!("invalid parameter name: {name}"))
+            })?;
+            unsafe {
+                self.check_error((self.parameter_space_set_index_parameter)(
+                    pspace,
+                    index,
+                    parameter_name.as_ptr(),
+                    value,
+                ))
+            }
+        })();
+
+        unsafe { (self.parameter_space_free)(pspace) };
+        result
     }
 }
 
@@ -353,6 +407,10 @@ impl FaissIndexHandle {
             (self.api.index_ivf_set_nprobe)(ivf_ptr, nprobe);
         }
         Ok(())
+    }
+
+    fn set_parameter(&mut self, name: &str, value: f64) -> Result<(), FaissError> {
+        self.api.set_index_parameter(self.ptr, name, value)
     }
 
     fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
@@ -475,6 +533,15 @@ impl IvfRaBitQIndex {
         self.inner.set_nprobe(nprobe)
     }
 
+    pub fn set_nbits(&mut self, nbits: u8) -> Result<(), FaissError> {
+        if nbits > 8 {
+            return Err(FaissError::InvalidArgument(
+                "rabitq nbits must be in range [0, 8]".to_owned(),
+            ));
+        }
+        self.inner.set_parameter("nbits", f64::from(nbits))
+    }
+
     pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.train(vectors)
     }
@@ -523,6 +590,24 @@ impl IvfSq8Index {
 
     pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.train(vectors)
+    }
+
+    pub fn set_ef_build(&mut self, ef_build: usize) -> Result<(), FaissError> {
+        if ef_build == 0 {
+            return Err(FaissError::InvalidArgument(
+                "hnsw ef_build must be > 0".to_owned(),
+            ));
+        }
+        self.inner.set_parameter("efConstruction", ef_build as f64)
+    }
+
+    pub fn set_ef_search(&mut self, ef_search: usize) -> Result<(), FaissError> {
+        if ef_search == 0 {
+            return Err(FaissError::InvalidArgument(
+                "hnsw ef_search must be > 0".to_owned(),
+            ));
+        }
+        self.inner.set_parameter("efSearch", ef_search as f64)
     }
 
     pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
@@ -638,6 +723,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_rabitq_nbits() -> Result<(), Box<dyn Error>> {
+        let mut index = match IvfRaBitQIndex::new(8, 8, MetricType::L2) {
+            Ok(index) => index,
+            Err(err) if skip_if_library_missing(&err) => {
+                eprintln!("skipping rabitq nbits test: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+        let err = index
+            .set_nbits(9)
+            .expect_err("set_nbits(9) should fail before calling Faiss");
+        assert!(matches!(err, FaissError::InvalidArgument(_)));
+        Ok(())
+    }
+
+    #[test]
     fn train_add_and_search_ivf_rabitq() -> Result<(), Box<dyn Error>> {
         let d = 16;
         let nlist = 8;
@@ -657,6 +759,7 @@ mod tests {
         index.train(&xb)?;
         index.add(&xb)?;
         index.set_nprobe(nlist)?;
+        index.set_nbits(8)?;
 
         assert_eq!(index.ntotal(), nb);
 
@@ -746,6 +849,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_hnsw_ef_configuration() -> Result<(), Box<dyn Error>> {
+        let mut index = match HnswIndex::new(8, 16, MetricType::L2) {
+            Ok(index) => index,
+            Err(err) if skip_if_library_missing(&err) => {
+                eprintln!("skipping hnsw ef validation test: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+        assert!(matches!(
+            index.set_ef_build(0),
+            Err(FaissError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            index.set_ef_search(0),
+            Err(FaissError::InvalidArgument(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn add_and_search_hnsw() -> Result<(), Box<dyn Error>> {
         let d = 16;
         let m = 32;
@@ -762,6 +886,8 @@ mod tests {
         };
 
         let xb = synthetic_vectors(nb, d);
+        index.set_ef_build(200)?;
+        index.set_ef_search(128)?;
         index.add(&xb)?;
 
         assert_eq!(index.ntotal(), nb);

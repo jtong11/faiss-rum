@@ -50,7 +50,10 @@ default settings:
 - `--queries 1000`
 - `--k 10`
 - `--nlist 1024`
+- `--nbits 8` (IVF-RaBitQ query quantization bits)
 - `--hnsw-m 32`
+- `--ef-build 200` (HNSW efConstruction)
+- `--ef-search 128` (HNSW efSearch)
 - `--metric l2`
 
 Optional CLI flags:
@@ -62,6 +65,9 @@ cargo run --release --bin benchmark_all -- \
   --queries 1000 \
   --k 10 \
   --nlist 1024 \
+  --nbits 8 \
   --hnsw-m 32 \
+  --ef-build 200 \
+  --ef-search 128 \
   --metric l2
 ```
