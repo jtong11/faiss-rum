@@ -135,6 +135,8 @@ type FnIndexD = unsafe extern "C" fn(*const FaissIndexOpaque) -> c_int;
 type FnIndexNTotal = unsafe extern "C" fn(*const FaissIndexOpaque) -> FaissIdx;
 type FnIndexTrain = unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32) -> c_int;
 type FnIndexAdd = unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32) -> c_int;
+type FnIndexAddWithIds =
+    unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32, *const FaissIdx) -> c_int;
 type FnIndexSearch = unsafe extern "C" fn(
     *const FaissIndexOpaque,
     FaissIdx,
@@ -164,6 +166,7 @@ struct FaissApi {
     index_ntotal: FnIndexNTotal,
     index_train: FnIndexTrain,
     index_add: FnIndexAdd,
+    index_add_with_ids: FnIndexAddWithIds,
     index_search: FnIndexSearch,
     index_ivf_cast: FnIndexIVFCast,
     index_ivf_set_nprobe: FnIndexIVFSetNProbe,
@@ -224,6 +227,7 @@ impl FaissApi {
             index_ntotal: load_symbol(&lib, b"faiss_Index_ntotal\0")?,
             index_train: load_symbol(&lib, b"faiss_Index_train\0")?,
             index_add: load_symbol(&lib, b"faiss_Index_add\0")?,
+            index_add_with_ids: load_symbol(&lib, b"faiss_Index_add_with_ids\0")?,
             index_search: load_symbol(&lib, b"faiss_Index_search\0")?,
             index_ivf_cast: load_symbol(&lib, b"faiss_IndexIVF_cast\0")?,
             index_ivf_set_nprobe: load_symbol(&lib, b"faiss_IndexIVF_set_nprobe\0")?,
@@ -429,6 +433,24 @@ impl FaissIndexHandle {
         }
     }
 
+    fn add_with_ids(&mut self, vectors: &[f32], ids: &[i64]) -> Result<(), FaissError> {
+        let n = self.validate_vector_matrix(vectors)?;
+        if ids.len() != n as usize {
+            return Err(FaissError::InvalidArgument(format!(
+                "ids length ({}) does not match number of vectors ({n})",
+                ids.len()
+            )));
+        }
+        unsafe {
+            self.api.check_error((self.api.index_add_with_ids)(
+                self.ptr,
+                n,
+                vectors.as_ptr(),
+                ids.as_ptr(),
+            ))
+        }
+    }
+
     fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
         if k == 0 {
             return Err(FaissError::InvalidArgument(
@@ -561,6 +583,10 @@ FAISS_C_LIB_PATH to that rebuilt libfaiss_c.so."
         self.inner.add(vectors)
     }
 
+    pub fn add_with_ids(&mut self, vectors: &[f32], ids: &[i64]) -> Result<(), FaissError> {
+        self.inner.add_with_ids(vectors, ids)
+    }
+
     pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
         self.inner.search(queries, k)
     }
@@ -605,6 +631,10 @@ impl IvfSq8Index {
 
     pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.add(vectors)
+    }
+
+    pub fn add_with_ids(&mut self, vectors: &[f32], ids: &[i64]) -> Result<(), FaissError> {
+        self.inner.add_with_ids(vectors, ids)
     }
 
     pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
@@ -661,6 +691,10 @@ impl HnswIndex {
 
     pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.add(vectors)
+    }
+
+    pub fn add_with_ids(&mut self, vectors: &[f32], ids: &[i64]) -> Result<(), FaissError> {
+        self.inner.add_with_ids(vectors, ids)
     }
 
     pub fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
@@ -924,6 +958,46 @@ mod tests {
                 "expected id {expected_id} to appear in top-{k} for query row {query_row}"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_with_ids_roundtrip_hnsw() -> Result<(), Box<dyn Error>> {
+        let d = 16;
+        let m = 32;
+        let nb = 256;
+        let k = 32;
+
+        let mut index = match HnswIndex::new(d, m, MetricType::L2) {
+            Ok(index) => index,
+            Err(err) if skip_if_library_missing(&err) => {
+                eprintln!("skipping HNSW add_with_ids test: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(Box::new(err)),
+        };
+
+        let xb = synthetic_vectors(nb, d);
+        let ids: Vec<i64> = (0..nb).map(|i| 10_000_i64 + i as i64).collect();
+        index.set_ef_build(200)?;
+        index.set_ef_search(128)?;
+        index.add_with_ids(&xb, &ids)?;
+
+        let query_row = 42usize;
+        let start = query_row * d;
+        let query = &xb[start..start + d];
+        let results = index.search(query, k)?;
+        assert!(
+            results.labels_for_query(0).contains(&ids[query_row]),
+            "expected custom id {} in top-{k}",
+            ids[query_row]
+        );
+
+        let err = index
+            .add_with_ids(&xb, &ids[..ids.len() - 1])
+            .expect_err("mismatched ids length should fail");
+        assert!(matches!(err, FaissError::InvalidArgument(_)));
 
         Ok(())
     }

@@ -230,12 +230,14 @@ fn metric_distance(metric: MetricType, x: &[f32], y: &[f32]) -> f32 {
 
 fn exact_topk_labels(
     base: &[f32],
+    ids: &[i64],
     queries: &[f32],
     dimension: usize,
     k: usize,
     metric: MetricType,
 ) -> Vec<i64> {
     let nb = base.len() / dimension;
+    assert_eq!(ids.len(), nb, "ids length must match base vectors");
     let nq = queries.len() / dimension;
     let mut all_labels = vec![-1_i64; nq * k];
 
@@ -244,7 +246,7 @@ fn exact_topk_labels(
         let mut scored: Vec<(f32, i64)> = (0..nb)
             .map(|i| {
                 let bv = &base[i * dimension..(i + 1) * dimension];
-                (metric_distance(metric, qv, bv), i as i64)
+                (metric_distance(metric, qv, bv), ids[i])
             })
             .collect();
 
@@ -275,6 +277,7 @@ fn recall_at_k(predicted: &[i64], ground_truth: &[i64], k: usize) -> f64 {
 fn bench_ivf_rabitq(
     cfg: &BenchConfig,
     base: &[f32],
+    ids: &[i64],
     train: &[f32],
     queries: &[f32],
     exact_labels: Option<&[i64]>,
@@ -282,7 +285,7 @@ fn bench_ivf_rabitq(
     let build_start = Instant::now();
     let mut index = IvfRaBitQIndex::new(cfg.dimension, cfg.nlist, cfg.metric)?;
     index.train(train)?;
-    index.add(base)?;
+    index.add_with_ids(base, ids)?;
     index.set_nprobe((cfg.nlist / 16).max(1).min(64))?;
     index.set_nbits(cfg.rabitq_nbits)?;
     let build_ms = build_start.elapsed().as_secs_f64() * 1_000.0;
@@ -306,6 +309,7 @@ fn bench_ivf_rabitq(
 fn bench_ivf_sq8(
     cfg: &BenchConfig,
     base: &[f32],
+    ids: &[i64],
     train: &[f32],
     queries: &[f32],
     exact_labels: Option<&[i64]>,
@@ -313,7 +317,7 @@ fn bench_ivf_sq8(
     let build_start = Instant::now();
     let mut index = IvfSq8Index::new(cfg.dimension, cfg.nlist, cfg.metric)?;
     index.train(train)?;
-    index.add(base)?;
+    index.add_with_ids(base, ids)?;
     index.set_nprobe((cfg.nlist / 16).max(1).min(64))?;
     let build_ms = build_start.elapsed().as_secs_f64() * 1_000.0;
 
@@ -336,6 +340,7 @@ fn bench_ivf_sq8(
 fn bench_hnsw(
     cfg: &BenchConfig,
     base: &[f32],
+    ids: &[i64],
     queries: &[f32],
     exact_labels: Option<&[i64]>,
 ) -> Result<BenchResult, Box<dyn Error>> {
@@ -343,7 +348,7 @@ fn bench_hnsw(
     let mut index = HnswIndex::new(cfg.dimension, cfg.hnsw_m, cfg.metric)?;
     index.set_ef_build(cfg.hnsw_ef_build)?;
     index.set_ef_search(cfg.hnsw_ef_search)?;
-    index.add(base)?;
+    index.add_with_ids(base, ids)?;
     let build_ms = build_start.elapsed().as_secs_f64() * 1_000.0;
 
     let search_start = Instant::now();
@@ -406,12 +411,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cfg = parse_args().map_err(|msg| -> Box<dyn Error> { msg.into() })?;
 
     let base = synthetic_vectors(cfg.embeddings, cfg.dimension, 0xdead_beef_u64);
+    let base_ids: Vec<i64> = (0..cfg.embeddings)
+        .map(|i| 1_000_000_i64 + i as i64)
+        .collect();
     let train_size = cfg.embeddings.min(25_000);
     let train = &base[..train_size * cfg.dimension];
     let queries = synthetic_vectors(cfg.queries, cfg.dimension, 0xface_cafe_u64);
     let exact_labels = if cfg.with_recall {
         let exact_start = Instant::now();
-        let labels = exact_topk_labels(&base, &queries, cfg.dimension, cfg.k, cfg.metric);
+        let labels =
+            exact_topk_labels(&base, &base_ids, &queries, cfg.dimension, cfg.k, cfg.metric);
         println!(
             "Computed exact ground truth in {:.2} ms",
             exact_start.elapsed().as_secs_f64() * 1_000.0
@@ -425,6 +434,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     rows.push(bench_ivf_rabitq(
         &cfg,
         &base,
+        &base_ids,
         train,
         &queries,
         exact_labels.as_deref(),
@@ -432,11 +442,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     rows.push(bench_ivf_sq8(
         &cfg,
         &base,
+        &base_ids,
         train,
         &queries,
         exact_labels.as_deref(),
     )?);
-    rows.push(bench_hnsw(&cfg, &base, &queries, exact_labels.as_deref())?);
+    rows.push(bench_hnsw(
+        &cfg,
+        &base,
+        &base_ids,
+        &queries,
+        exact_labels.as_deref(),
+    )?);
 
     print_report(&cfg, &rows);
     Ok(())

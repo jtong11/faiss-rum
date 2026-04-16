@@ -76,3 +76,5 @@ cargo run --release --bin benchmark_all -- \
 Enable recall measurement with:
 
 - `--with-recall` to compute Recall@k against exact brute-force top-k
+- `--with-recall` also uses explicit vector IDs (`add_with_ids`) so recall is
+  computed in the same label space returned by ANN search.
