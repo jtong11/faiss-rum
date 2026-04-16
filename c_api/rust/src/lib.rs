@@ -592,24 +592,6 @@ impl IvfSq8Index {
         self.inner.train(vectors)
     }
 
-    pub fn set_ef_build(&mut self, ef_build: usize) -> Result<(), FaissError> {
-        if ef_build == 0 {
-            return Err(FaissError::InvalidArgument(
-                "hnsw ef_build must be > 0".to_owned(),
-            ));
-        }
-        self.inner.set_parameter("efConstruction", ef_build as f64)
-    }
-
-    pub fn set_ef_search(&mut self, ef_search: usize) -> Result<(), FaissError> {
-        if ef_search == 0 {
-            return Err(FaissError::InvalidArgument(
-                "hnsw ef_search must be > 0".to_owned(),
-            ));
-        }
-        self.inner.set_parameter("efSearch", ef_search as f64)
-    }
-
     pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.add(vectors)
     }
@@ -646,6 +628,24 @@ impl HnswIndex {
 
     pub fn train(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
         self.inner.train(vectors)
+    }
+
+    pub fn set_ef_build(&mut self, ef_build: usize) -> Result<(), FaissError> {
+        if ef_build == 0 {
+            return Err(FaissError::InvalidArgument(
+                "hnsw ef_build must be > 0".to_owned(),
+            ));
+        }
+        self.inner.set_parameter("efConstruction", ef_build as f64)
+    }
+
+    pub fn set_ef_search(&mut self, ef_search: usize) -> Result<(), FaissError> {
+        if ef_search == 0 {
+            return Err(FaissError::InvalidArgument(
+                "hnsw ef_search must be > 0".to_owned(),
+            ));
+        }
+        self.inner.set_parameter("efSearch", ef_search as f64)
     }
 
     pub fn add(&mut self, vectors: &[f32]) -> Result<(), FaissError> {
