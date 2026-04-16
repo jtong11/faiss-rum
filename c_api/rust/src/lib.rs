@@ -135,8 +135,6 @@ type FnIndexD = unsafe extern "C" fn(*const FaissIndexOpaque) -> c_int;
 type FnIndexNTotal = unsafe extern "C" fn(*const FaissIndexOpaque) -> FaissIdx;
 type FnIndexTrain = unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32) -> c_int;
 type FnIndexAdd = unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32) -> c_int;
-type FnIndexAddWithIds =
-    unsafe extern "C" fn(*mut FaissIndexOpaque, FaissIdx, *const f32, *const FaissIdx) -> c_int;
 type FnIndexSearch = unsafe extern "C" fn(
     *const FaissIndexOpaque,
     FaissIdx,
@@ -166,7 +164,6 @@ struct FaissApi {
     index_ntotal: FnIndexNTotal,
     index_train: FnIndexTrain,
     index_add: FnIndexAdd,
-    index_add_with_ids: FnIndexAddWithIds,
     index_search: FnIndexSearch,
     index_ivf_cast: FnIndexIVFCast,
     index_ivf_set_nprobe: FnIndexIVFSetNProbe,
@@ -227,7 +224,6 @@ impl FaissApi {
             index_ntotal: load_symbol(&lib, b"faiss_Index_ntotal\0")?,
             index_train: load_symbol(&lib, b"faiss_Index_train\0")?,
             index_add: load_symbol(&lib, b"faiss_Index_add\0")?,
-            index_add_with_ids: load_symbol(&lib, b"faiss_Index_add_with_ids\0")?,
             index_search: load_symbol(&lib, b"faiss_Index_search\0")?,
             index_ivf_cast: load_symbol(&lib, b"faiss_IndexIVF_cast\0")?,
             index_ivf_set_nprobe: load_symbol(&lib, b"faiss_IndexIVF_set_nprobe\0")?,
@@ -449,29 +445,16 @@ impl FaissIndexHandle {
             )));
         }
         let ntotal_before = self.ntotal();
-        let add_result = unsafe {
-            self.api.check_error((self.api.index_add_with_ids)(
-                self.ptr,
-                n,
-                vectors.as_ptr(),
-                ids.as_ptr(),
-            ))
-        };
-        match add_result {
-            Ok(()) => Ok(()),
-            Err(FaissError::Api(message)) if message.contains("add_with_ids not implemented") => {
-                // Fallback for index types that don't implement add_with_ids in Faiss:
-                // add sequentially and remap search labels back to user-provided IDs.
-                self.add(vectors)?;
-                let lookup = self
-                    .custom_id_lookup
-                    .get_or_insert_with(|| (0..ntotal_before as i64).collect());
-                lookup.truncate(ntotal_before);
-                lookup.extend_from_slice(ids);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
+        // Wrapper-level add_with_ids implementation: add sequentially, then remap labels.
+        // This works across all index families, including those that don't implement
+        // native add_with_ids in Faiss.
+        self.add(vectors)?;
+        let lookup = self
+            .custom_id_lookup
+            .get_or_insert_with(|| (0..ntotal_before as i64).collect());
+        lookup.truncate(ntotal_before);
+        lookup.extend_from_slice(ids);
+        Ok(())
     }
 
     fn search(&self, queries: &[f32], k: usize) -> Result<SearchResult, FaissError> {
