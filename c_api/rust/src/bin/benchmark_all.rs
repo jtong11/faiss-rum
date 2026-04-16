@@ -1,6 +1,4 @@
 use faiss_rabitq::{HnswIndex, IvfRaBitQIndex, IvfSq8Index, MetricType};
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
 use std::env;
 use std::error::Error;
 use std::time::Instant;
@@ -46,34 +44,6 @@ struct BenchResult {
     qps: f64,
     valid_hits: usize,
     recall_at_k: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct HeapCandidate {
-    score: f32,
-    id: usize,
-}
-
-impl PartialEq for HeapCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.score.to_bits() == other.score.to_bits() && self.id == other.id
-    }
-}
-
-impl Eq for HeapCandidate {}
-
-impl PartialOrd for HeapCandidate {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for HeapCandidate {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .total_cmp(&other.score)
-            .then_with(|| self.id.cmp(&other.id))
-    }
 }
 
 fn synthetic_vectors(n: usize, d: usize, seed: u64) -> Vec<f32> {
@@ -235,7 +205,6 @@ fn help_text() -> String {
         "      --ef-search <usize>",
         "      --metric <l2|ip>",
         "      --with-recall",
-        "      --with-recall",
         "  -h, --help",
     ]
     .join("\n")
@@ -301,81 +270,6 @@ fn recall_at_k(predicted: &[i64], ground_truth: &[i64], k: usize) -> f64 {
         }
     }
     hits as f64 / (nq * k) as f64
-}
-
-fn transformed_score(metric: MetricType, query: &[f32], base: &[f32]) -> f32 {
-    match metric {
-        MetricType::L2 => query
-            .iter()
-            .zip(base.iter())
-            .map(|(q, b)| {
-                let diff = q - b;
-                diff * diff
-            })
-            .sum(),
-        MetricType::InnerProduct => -query
-            .iter()
-            .zip(base.iter())
-            .map(|(q, b)| q * b)
-            .sum::<f32>(),
-    }
-}
-
-fn compute_exact_topk_labels(cfg: &BenchConfig, base: &[f32], queries: &[f32]) -> Vec<i64> {
-    let k = cfg.k;
-    let mut labels = Vec::with_capacity(cfg.queries * k);
-
-    for q_idx in 0..cfg.queries {
-        let q_start = q_idx * cfg.dimension;
-        let q = &queries[q_start..q_start + cfg.dimension];
-
-        let mut heap = BinaryHeap::with_capacity(k);
-        for b_idx in 0..cfg.embeddings {
-            let b_start = b_idx * cfg.dimension;
-            let b = &base[b_start..b_start + cfg.dimension];
-            let score = transformed_score(cfg.metric, q, b);
-            let cand = HeapCandidate { score, id: b_idx };
-
-            if heap.len() < k {
-                heap.push(cand);
-                continue;
-            }
-
-            if let Some(worst) = heap.peek()
-                && cand.score < worst.score
-            {
-                heap.pop();
-                heap.push(cand);
-            }
-        }
-
-        let mut ordered = heap.into_vec();
-        ordered.sort_by(|a, b| a.score.total_cmp(&b.score));
-        labels.extend(ordered.iter().map(|cand| cand.id as i64));
-    }
-
-    labels
-}
-
-fn recall_at_k(predicted: &[i64], exact: &[i64], k: usize) -> f64 {
-    if predicted.len() != exact.len() || k == 0 {
-        return 0.0;
-    }
-    let nq = predicted.len() / k;
-    let mut sum = 0.0;
-
-    for q in 0..nq {
-        let start = q * k;
-        let end = start + k;
-        let gt: HashSet<i64> = exact[start..end].iter().copied().collect();
-        let hits = predicted[start..end]
-            .iter()
-            .filter(|&&id| id >= 0 && gt.contains(&id))
-            .count();
-        sum += hits as f64 / k as f64;
-    }
-
-    sum / nq as f64
 }
 
 fn bench_ivf_rabitq(
@@ -517,7 +411,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let queries = synthetic_vectors(cfg.queries, cfg.dimension, 0xface_cafe_u64);
     let exact_labels = if cfg.with_recall {
         let exact_start = Instant::now();
-        let labels = compute_exact_topk_labels(&cfg, &base, &queries);
+        let labels = exact_topk_labels(&base, &queries, cfg.dimension, cfg.k, cfg.metric);
         println!(
             "Computed exact ground truth in {:.2} ms",
             exact_start.elapsed().as_secs_f64() * 1_000.0
