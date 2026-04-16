@@ -69,5 +69,10 @@ cargo run --release --bin benchmark_all -- \
   --hnsw-m 32 \
   --ef-build 200 \
   --ef-search 128 \
+  --with-recall \
   --metric l2
 ```
+
+Enable recall measurement with:
+
+- `--with-recall` to compute Recall@k against exact brute-force top-k

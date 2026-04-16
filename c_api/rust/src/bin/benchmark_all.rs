@@ -1,4 +1,6 @@
 use faiss_rabitq::{HnswIndex, IvfRaBitQIndex, IvfSq8Index, MetricType};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::env;
 use std::error::Error;
 use std::time::Instant;
@@ -15,6 +17,7 @@ struct BenchConfig {
     hnsw_ef_build: usize,
     hnsw_ef_search: usize,
     metric: MetricType,
+    with_recall: bool,
 }
 
 impl Default for BenchConfig {
@@ -30,6 +33,7 @@ impl Default for BenchConfig {
             hnsw_ef_build: 200,
             hnsw_ef_search: 128,
             metric: MetricType::L2,
+            with_recall: false,
         }
     }
 }
@@ -41,6 +45,35 @@ struct BenchResult {
     search_ms: f64,
     qps: f64,
     valid_hits: usize,
+    recall_at_k: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HeapCandidate {
+    score: f32,
+    id: usize,
+}
+
+impl PartialEq for HeapCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.score.to_bits() == other.score.to_bits() && self.id == other.id
+    }
+}
+
+impl Eq for HeapCandidate {}
+
+impl PartialOrd for HeapCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapCandidate {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| self.id.cmp(&other.id))
+    }
 }
 
 fn synthetic_vectors(n: usize, d: usize, seed: u64) -> Vec<f32> {
@@ -136,6 +169,10 @@ fn parse_args() -> Result<BenchConfig, String> {
                 cfg.metric = parse_metric(read_value(i)?)?;
                 i += 2;
             }
+            "--with-recall" => {
+                cfg.with_recall = true;
+                i += 1;
+            }
             "--help" | "-h" => {
                 return Err(help_text());
             }
@@ -156,6 +193,9 @@ fn parse_args() -> Result<BenchConfig, String> {
     }
     if cfg.k == 0 {
         return Err("k must be > 0".to_owned());
+    }
+    if cfg.k > cfg.embeddings {
+        return Err("k must be <= embeddings".to_owned());
     }
     if cfg.nlist == 0 {
         return Err("nlist must be > 0".to_owned());
@@ -194,6 +234,8 @@ fn help_text() -> String {
         "      --ef-build <usize>",
         "      --ef-search <usize>",
         "      --metric <l2|ip>",
+        "      --with-recall",
+        "      --with-recall",
         "  -h, --help",
     ]
     .join("\n")
@@ -203,11 +245,145 @@ fn valid_hits(labels: &[i64]) -> usize {
     labels.iter().filter(|&&id| id >= 0).count()
 }
 
+fn metric_distance(metric: MetricType, x: &[f32], y: &[f32]) -> f32 {
+    match metric {
+        MetricType::L2 => x
+            .iter()
+            .zip(y.iter())
+            .map(|(a, b)| {
+                let d = a - b;
+                d * d
+            })
+            .sum(),
+        MetricType::InnerProduct => -x.iter().zip(y.iter()).map(|(a, b)| a * b).sum::<f32>(),
+    }
+}
+
+fn exact_topk_labels(
+    base: &[f32],
+    queries: &[f32],
+    dimension: usize,
+    k: usize,
+    metric: MetricType,
+) -> Vec<i64> {
+    let nb = base.len() / dimension;
+    let nq = queries.len() / dimension;
+    let mut all_labels = vec![-1_i64; nq * k];
+
+    for q in 0..nq {
+        let qv = &queries[q * dimension..(q + 1) * dimension];
+        let mut scored: Vec<(f32, i64)> = (0..nb)
+            .map(|i| {
+                let bv = &base[i * dimension..(i + 1) * dimension];
+                (metric_distance(metric, qv, bv), i as i64)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (rank, (_, id)) in scored.into_iter().take(k).enumerate() {
+            all_labels[q * k + rank] = id;
+        }
+    }
+
+    all_labels
+}
+
+fn recall_at_k(predicted: &[i64], ground_truth: &[i64], k: usize) -> f64 {
+    let nq = predicted.len() / k;
+    let mut hits = 0_usize;
+    for q in 0..nq {
+        let pred = &predicted[q * k..(q + 1) * k];
+        let gt = &ground_truth[q * k..(q + 1) * k];
+        for &id in pred {
+            if id >= 0 && gt.contains(&id) {
+                hits += 1;
+            }
+        }
+    }
+    hits as f64 / (nq * k) as f64
+}
+
+fn transformed_score(metric: MetricType, query: &[f32], base: &[f32]) -> f32 {
+    match metric {
+        MetricType::L2 => query
+            .iter()
+            .zip(base.iter())
+            .map(|(q, b)| {
+                let diff = q - b;
+                diff * diff
+            })
+            .sum(),
+        MetricType::InnerProduct => -query
+            .iter()
+            .zip(base.iter())
+            .map(|(q, b)| q * b)
+            .sum::<f32>(),
+    }
+}
+
+fn compute_exact_topk_labels(cfg: &BenchConfig, base: &[f32], queries: &[f32]) -> Vec<i64> {
+    let k = cfg.k;
+    let mut labels = Vec::with_capacity(cfg.queries * k);
+
+    for q_idx in 0..cfg.queries {
+        let q_start = q_idx * cfg.dimension;
+        let q = &queries[q_start..q_start + cfg.dimension];
+
+        let mut heap = BinaryHeap::with_capacity(k);
+        for b_idx in 0..cfg.embeddings {
+            let b_start = b_idx * cfg.dimension;
+            let b = &base[b_start..b_start + cfg.dimension];
+            let score = transformed_score(cfg.metric, q, b);
+            let cand = HeapCandidate { score, id: b_idx };
+
+            if heap.len() < k {
+                heap.push(cand);
+                continue;
+            }
+
+            if let Some(worst) = heap.peek()
+                && cand.score < worst.score
+            {
+                heap.pop();
+                heap.push(cand);
+            }
+        }
+
+        let mut ordered = heap.into_vec();
+        ordered.sort_by(|a, b| a.score.total_cmp(&b.score));
+        labels.extend(ordered.iter().map(|cand| cand.id as i64));
+    }
+
+    labels
+}
+
+fn recall_at_k(predicted: &[i64], exact: &[i64], k: usize) -> f64 {
+    if predicted.len() != exact.len() || k == 0 {
+        return 0.0;
+    }
+    let nq = predicted.len() / k;
+    let mut sum = 0.0;
+
+    for q in 0..nq {
+        let start = q * k;
+        let end = start + k;
+        let gt: HashSet<i64> = exact[start..end].iter().copied().collect();
+        let hits = predicted[start..end]
+            .iter()
+            .filter(|&&id| id >= 0 && gt.contains(&id))
+            .count();
+        sum += hits as f64 / k as f64;
+    }
+
+    sum / nq as f64
+}
+
 fn bench_ivf_rabitq(
     cfg: &BenchConfig,
     base: &[f32],
     train: &[f32],
     queries: &[f32],
+    exact_labels: Option<&[i64]>,
 ) -> Result<BenchResult, Box<dyn Error>> {
     let build_start = Instant::now();
     let mut index = IvfRaBitQIndex::new(cfg.dimension, cfg.nlist, cfg.metric)?;
@@ -229,6 +405,7 @@ fn bench_ivf_rabitq(
         search_ms,
         qps,
         valid_hits: valid_hits(&results.labels),
+        recall_at_k: exact_labels.map(|gt| recall_at_k(&results.labels, gt, cfg.k)),
     })
 }
 
@@ -237,6 +414,7 @@ fn bench_ivf_sq8(
     base: &[f32],
     train: &[f32],
     queries: &[f32],
+    exact_labels: Option<&[i64]>,
 ) -> Result<BenchResult, Box<dyn Error>> {
     let build_start = Instant::now();
     let mut index = IvfSq8Index::new(cfg.dimension, cfg.nlist, cfg.metric)?;
@@ -257,6 +435,7 @@ fn bench_ivf_sq8(
         search_ms,
         qps,
         valid_hits: valid_hits(&results.labels),
+        recall_at_k: exact_labels.map(|gt| recall_at_k(&results.labels, gt, cfg.k)),
     })
 }
 
@@ -264,6 +443,7 @@ fn bench_hnsw(
     cfg: &BenchConfig,
     base: &[f32],
     queries: &[f32],
+    exact_labels: Option<&[i64]>,
 ) -> Result<BenchResult, Box<dyn Error>> {
     let build_start = Instant::now();
     let mut index = HnswIndex::new(cfg.dimension, cfg.hnsw_m, cfg.metric)?;
@@ -284,6 +464,7 @@ fn bench_hnsw(
         search_ms,
         qps,
         valid_hits: valid_hits(&results.labels),
+        recall_at_k: exact_labels.map(|gt| recall_at_k(&results.labels, gt, cfg.k)),
     })
 }
 
@@ -299,17 +480,31 @@ fn print_report(cfg: &BenchConfig, rows: &[BenchResult]) {
         cfg.hnsw_m,
         cfg.hnsw_ef_build,
         cfg.hnsw_ef_search,
-        cfg.metric
+        cfg.metric,
     );
-    println!(
-        "{:<12} {:>12} {:>12} {:>12} {:>12}",
-        "algorithm", "build_ms", "search_ms", "qps", "valid_hits"
-    );
-    for row in rows {
+    if cfg.with_recall {
         println!(
-            "{:<12} {:>12.2} {:>12.2} {:>12.2} {:>12}",
-            row.algo, row.build_ms, row.search_ms, row.qps, row.valid_hits
+            "{:<12} {:>12} {:>12} {:>12} {:>12} {:>12}",
+            "algorithm", "build_ms", "search_ms", "qps", "valid_hits", "recall@k"
         );
+    } else {
+        println!(
+            "{:<12} {:>12} {:>12} {:>12} {:>12}",
+            "algorithm", "build_ms", "search_ms", "qps", "valid_hits"
+        );
+    }
+    for row in rows {
+        if let Some(recall) = row.recall_at_k {
+            println!(
+                "{:<12} {:>12.2} {:>12.2} {:>12.2} {:>12} {:>12.4}",
+                row.algo, row.build_ms, row.search_ms, row.qps, row.valid_hits, recall
+            );
+        } else {
+            println!(
+                "{:<12} {:>12.2} {:>12.2} {:>12.2} {:>12}",
+                row.algo, row.build_ms, row.search_ms, row.qps, row.valid_hits
+            );
+        }
     }
 }
 
@@ -320,11 +515,34 @@ fn main() -> Result<(), Box<dyn Error>> {
     let train_size = cfg.embeddings.min(25_000);
     let train = &base[..train_size * cfg.dimension];
     let queries = synthetic_vectors(cfg.queries, cfg.dimension, 0xface_cafe_u64);
+    let exact_labels = if cfg.with_recall {
+        let exact_start = Instant::now();
+        let labels = compute_exact_topk_labels(&cfg, &base, &queries);
+        println!(
+            "Computed exact ground truth in {:.2} ms",
+            exact_start.elapsed().as_secs_f64() * 1_000.0
+        );
+        Some(labels)
+    } else {
+        None
+    };
 
     let mut rows = Vec::with_capacity(3);
-    rows.push(bench_ivf_rabitq(&cfg, &base, train, &queries)?);
-    rows.push(bench_ivf_sq8(&cfg, &base, train, &queries)?);
-    rows.push(bench_hnsw(&cfg, &base, &queries)?);
+    rows.push(bench_ivf_rabitq(
+        &cfg,
+        &base,
+        train,
+        &queries,
+        exact_labels.as_deref(),
+    )?);
+    rows.push(bench_ivf_sq8(
+        &cfg,
+        &base,
+        train,
+        &queries,
+        exact_labels.as_deref(),
+    )?);
+    rows.push(bench_hnsw(&cfg, &base, &queries, exact_labels.as_deref())?);
 
     print_report(&cfg, &rows);
     Ok(())
