@@ -432,7 +432,9 @@ void RaBitDistanceComputerQ::set_query(const float* x) {
     float v_max = std::numeric_limits<float>::lowest();
     if (centered) {
         float z_max = z_max_by_qb[qb - 1];
-        float v_radius = z_max * std::sqrt(query_fac.qr_to_c_L2sqr / d);
+        float v_radius = (d == 0)
+                ? 0.0f
+                : z_max * std::sqrt(query_fac.qr_to_c_L2sqr / d);
         v_min = -v_radius;
         v_max = v_radius;
     } else {
@@ -444,16 +446,26 @@ void RaBitDistanceComputerQ::set_query(const float* x) {
     }
 
     const uint8_t max_code = (1 << qb) - 1;
-    const float delta = (v_max - v_min) / max_code;
-    const float inv_delta = 1.0f / delta;
+    const float quantization_range = v_max - v_min;
+    const bool has_nonzero_quantization_range =
+            std::isfinite(quantization_range) &&
+            quantization_range > std::numeric_limits<float>::epsilon();
+    const float delta =
+            has_nonzero_quantization_range ? (quantization_range / max_code)
+                                           : 0.0f;
+    const float inv_delta = has_nonzero_quantization_range ? (1.0f / delta)
+                                                            : 0.0f;
 
     size_t sum_qq = 0;
     int64_t sum2_signed_odd_int = 0;
     for (int32_t i = 0; i < d; i++) {
         const float v_q = rotated_q[i];
         // a default non-randomized SQ
-        const uint8_t v_qq = std::clamp<float>(
-                std::round((v_q - v_min) * inv_delta), 0, max_code);
+        const float quantized_value = has_nonzero_quantization_range
+                ? std::round((v_q - v_min) * inv_delta)
+                : 0.0f;
+        const uint8_t v_qq =
+                std::clamp<float>(quantized_value, 0, max_code);
         rotated_qq[i] = v_qq;
         sum_qq += v_qq;
         if (centered) {
@@ -477,11 +489,22 @@ void RaBitDistanceComputerQ::set_query(const float* x) {
         }
     }
 
-    query_fac.c1 = 2 * delta * inv_d;
+    query_fac.c1 = has_nonzero_quantization_range ? (2 * delta * inv_d) : 0.0f;
     query_fac.c2 = 2 * v_min * inv_d;
-    query_fac.c34 = inv_d * (delta * sum_qq + d * v_min);
-    query_fac.int_dot_scale =
-            std::sqrt(query_fac.qr_to_c_L2sqr / (sum2_signed_odd_int * d));
+    query_fac.c34 = inv_d *
+            ((has_nonzero_quantization_range ? (delta * sum_qq) : 0.0f) +
+             d * v_min);
+
+    const float int_dot_denominator = sum2_signed_odd_int * d;
+    if (query_fac.qr_to_c_L2sqr <= 0 ||
+        int_dot_denominator <= std::numeric_limits<float>::epsilon() ||
+        !std::isfinite(query_fac.qr_to_c_L2sqr) ||
+        !std::isfinite(int_dot_denominator)) {
+        query_fac.int_dot_scale = 0.0f;
+    } else {
+        query_fac.int_dot_scale =
+                std::sqrt(query_fac.qr_to_c_L2sqr / int_dot_denominator);
+    }
 
     if (metric_type == MetricType::METRIC_INNER_PRODUCT) {
         // precompute if needed
