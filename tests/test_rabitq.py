@@ -422,6 +422,38 @@ class TestIVFRaBitQ(unittest.TestCase):
     def test_comparison_vs_pq_IP(self):
         self.do_comparison_vs_pq_test(faiss.METRIC_INNER_PRODUCT)
 
+    def test_ip_qb8_degenerate_query_range(self):
+        # Constant query/database values can collapse SQ range to zero.
+        # Distance computation should stay finite and consistent.
+        d = 64
+        nlist = 1
+        k = 5
+
+        v = np.full((1, d), 3.0, dtype=np.float32)
+        xt = np.repeat(v, 256, axis=0)
+        xb = np.repeat(v, 512, axis=0)
+        xq = np.repeat(v, 4, axis=0)
+
+        quantizer = faiss.IndexFlat(d, faiss.METRIC_INNER_PRODUCT)
+        index_rbq = faiss.IndexIVFRaBitQ(
+            quantizer, d, nlist, faiss.METRIC_INNER_PRODUCT
+        )
+        index_rbq.train(xt)
+        index_rbq.add(xb)
+
+        expected_ip = np.dot(v[0], v[0])
+        for centered in (False, True):
+            params = faiss.IVFRaBitQSearchParameters()
+            params.nprobe = 1
+            params.qb = 8
+            params.centered = centered
+
+            D, I = index_rbq.search(xq, k, params=params)
+
+            np.testing.assert_(np.isfinite(D).all())
+            np.testing.assert_(I.min() >= 0)
+            np.testing.assert_allclose(D, expected_ip, rtol=1e-4, atol=1e-4)
+
     def test_comparison_vs_ref_L2(self):
         ds = datasets.SyntheticDataset(TEST_DIM, TEST_N, TEST_N, 100)
 

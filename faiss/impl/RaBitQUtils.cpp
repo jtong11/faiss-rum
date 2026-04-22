@@ -183,7 +183,9 @@ QueryFactorsData compute_query_factors(
 
     if (centered) {
         float z_max = Z_MAX_BY_QB[qb - 1];
-        float v_radius = z_max * std::sqrt(query_factors.qr_to_c_L2sqr / d);
+        float v_radius = (d == 0)
+                ? 0.0f
+                : z_max * std::sqrt(query_factors.qr_to_c_L2sqr / d);
         v_min = -v_radius;
         v_max = v_radius;
     } else {
@@ -203,42 +205,58 @@ QueryFactorsData compute_query_factors(
 
     // Quantize the query
     const uint8_t max_code = (1 << qb) - 1;
-    const float delta = (v_max - v_min) / max_code;
-    const float inv_delta = 1.0f / delta;
+    const float quantization_range = v_max - v_min;
+    const bool has_nonzero_quantization_range =
+            std::isfinite(quantization_range) &&
+            quantization_range > std::numeric_limits<float>::epsilon();
+    const float delta =
+            has_nonzero_quantization_range ? (quantization_range / max_code)
+                                           : 0.0f;
+    const float inv_delta = has_nonzero_quantization_range ? (1.0f / delta)
+                                                            : 0.0f;
 
     rotated_qq.resize(d);
     size_t sum_qq = 0;
     int64_t sum2_signed_odd_int = 0;
 
-    // Process arrays - throw error if they are unexpectedly empty
-    if (d > 0 && !rotated_q.empty() && !rotated_qq.empty()) {
-        for (size_t i = 0; i < d; i++) {
-            const float v_q = rotated_q[i];
-            // Non-randomized scalar quantization
-            const uint8_t v_qq = std::clamp<float>(
-                    std::round((v_q - v_min) * inv_delta), 0, max_code);
-            rotated_qq[i] = v_qq;
-            sum_qq += v_qq;
+    for (size_t i = 0; i < d; i++) {
+        const float v_q = rotated_q[i];
+        const float quantized_value = has_nonzero_quantization_range
+                ? std::round((v_q - v_min) * inv_delta)
+                : 0.0f;
+        // Non-randomized scalar quantization
+        const uint8_t v_qq = std::clamp<float>(quantized_value, 0, max_code);
+        rotated_qq[i] = v_qq;
+        sum_qq += v_qq;
 
-            if (centered) {
-                int64_t signed_odd_int = int64_t(v_qq) * 2 - max_code;
-                sum2_signed_odd_int += signed_odd_int * signed_odd_int;
-            }
+        if (centered) {
+            int64_t signed_odd_int = int64_t(v_qq) * 2 - max_code;
+            sum2_signed_odd_int += signed_odd_int * signed_odd_int;
         }
-    } else {
-        FAISS_THROW_MSG(
-                "Arrays unexpectedly empty when d=" + std::to_string(d) +
-                "or d is incorrectly set");
     }
 
     // Compute query factors
-    query_factors.c1 = 2 * delta * inv_d_sqrt;
+    query_factors.c1 = has_nonzero_quantization_range ? (2 * delta * inv_d_sqrt)
+                                                       : 0.0f;
     query_factors.c2 = 2 * v_min * inv_d_sqrt;
-    query_factors.c34 = inv_d_sqrt * (delta * sum_qq + d * v_min);
+    query_factors.c34 = inv_d_sqrt *
+            ((has_nonzero_quantization_range ? (delta * sum_qq) : 0.0f) +
+             d * v_min);
 
     if (centered) {
-        query_factors.int_dot_scale = std::sqrt(
-                query_factors.qr_to_c_L2sqr / (sum2_signed_odd_int * d));
+        const double int_dot_denominator =
+                static_cast<double>(sum2_signed_odd_int) *
+                static_cast<double>(d);
+        if (query_factors.qr_to_c_L2sqr <= 0.0f ||
+            int_dot_denominator <=
+                    static_cast<double>(std::numeric_limits<float>::epsilon()) ||
+            !std::isfinite(query_factors.qr_to_c_L2sqr) ||
+            !std::isfinite(int_dot_denominator)) {
+            query_factors.int_dot_scale = 0.0f;
+        } else {
+            query_factors.int_dot_scale = std::sqrt(
+                    query_factors.qr_to_c_L2sqr / int_dot_denominator);
+        }
     } else {
         query_factors.int_dot_scale = 1.0f;
     }
