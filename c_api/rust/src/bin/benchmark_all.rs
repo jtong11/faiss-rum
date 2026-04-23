@@ -113,7 +113,7 @@ fn parse_args() -> Result<BenchConfig, String> {
                     .map_err(|e| format!("invalid nlist value: {e}"))?;
                 i += 2;
             }
-            "--nbits" | "--rabitq-nbits" => {
+            "--nbits" | "--rabitq-nbits" | "--query-nbits" | "--rabitq-query-nbits" => {
                 cfg.rabitq_nbits = read_value(i)?
                     .parse::<u8>()
                     .map_err(|e| format!("invalid rabitq nbits value: {e}"))?;
@@ -211,7 +211,7 @@ fn help_text() -> String {
         "      --k <usize>",
         "      --nlist <usize>",
         "      --data-nbits, --rabitq-data-nbits <u8>",
-        "      --nbits, --rabitq-nbits <u8 in [0,8]>",
+        "      --query-nbits, --rabitq-query-nbits, --nbits, --rabitq-nbits <u8 in [0,8]>",
         "      --hnsw-m <usize>",
         "      --ef-build <usize>",
         "      --ef-search <usize>",
@@ -299,7 +299,7 @@ fn bench_ivf_rabitq(
     index.train(train)?;
     index.add_with_ids(base, ids)?;
     index.set_nprobe((cfg.nlist / 16).max(1).min(64))?;
-    index.set_nbits_both(cfg.rabitq_data_nbits, cfg.rabitq_nbits)?;
+    index.set_nbits_both(cfg.rabitq_nbits, cfg.rabitq_data_nbits)?;
     let build_ms = build_start.elapsed().as_secs_f64() * 1_000.0;
 
     let search_start = Instant::now();
@@ -381,14 +381,14 @@ fn bench_hnsw(
 
 fn print_report(cfg: &BenchConfig, rows: &[BenchResult]) {
     println!(
-        "Benchmark config: embeddings={} dim={} queries={} k={} nlist={} rabitq_nbits={} hnsw_m={} ef_build={} ef_search={} metric={:?}",
+        "Benchmark config: embeddings={} dim={} queries={} k={} nlist={} query_nbits={} data_nbits={} hnsw_m={} ef_build={} ef_search={} metric={:?}",
         cfg.embeddings,
         cfg.dimension,
         cfg.queries,
         cfg.k,
         cfg.nlist,
-        cfg.rabitq_data_nbits,
         cfg.rabitq_nbits,
+        cfg.rabitq_data_nbits,
         cfg.hnsw_m,
         cfg.hnsw_ef_build,
         cfg.hnsw_ef_search,
