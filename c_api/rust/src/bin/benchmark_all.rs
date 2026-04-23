@@ -10,6 +10,7 @@ struct BenchConfig {
     queries: usize,
     k: usize,
     nlist: usize,
+    rabitq_data_nbits: u8,
     rabitq_nbits: u8,
     hnsw_m: usize,
     hnsw_ef_build: usize,
@@ -26,6 +27,7 @@ impl Default for BenchConfig {
             queries: 1_000,
             k: 10,
             nlist: 1_024,
+            rabitq_data_nbits: 1,
             rabitq_nbits: 8,
             hnsw_m: 32,
             hnsw_ef_build: 200,
@@ -117,6 +119,12 @@ fn parse_args() -> Result<BenchConfig, String> {
                     .map_err(|e| format!("invalid rabitq nbits value: {e}"))?;
                 i += 2;
             }
+            "--data-nbits" | "--rabitq-data-nbits" => {
+                cfg.rabitq_data_nbits = read_value(i)?
+                    .parse::<u8>()
+                    .map_err(|e| format!("invalid rabitq data nbits value: {e}"))?;
+                i += 2;
+            }
             "--hnsw-m" => {
                 cfg.hnsw_m = read_value(i)?
                     .parse::<usize>()
@@ -173,6 +181,9 @@ fn parse_args() -> Result<BenchConfig, String> {
     if cfg.rabitq_nbits > 8 {
         return Err("rabitq nbits must be in [0, 8]".to_owned());
     }
+    if cfg.rabitq_data_nbits == 0 {
+        return Err("rabitq data nbits must be > 0".to_owned());
+    }
     if cfg.hnsw_m == 0 {
         return Err("hnsw-m must be > 0".to_owned());
     }
@@ -191,7 +202,7 @@ fn help_text() -> String {
         "Benchmark Faiss IVF-RaBitQ, IVF-SQ8, and HNSW from Rust",
         "",
         "Defaults:",
-        "  --embeddings 100000 --dimension 64 --queries 1000 --k 10 --nlist 1024 --nbits 8 --hnsw-m 32 --ef-build 200 --ef-search 128 --metric l2",
+        "  --embeddings 100000 --dimension 64 --queries 1000 --k 10 --nlist 1024 --data-nbits 1 --nbits 8 --hnsw-m 32 --ef-build 200 --ef-search 128 --metric l2",
         "",
         "Flags:",
         "  -n, --embeddings <usize>",
@@ -199,6 +210,7 @@ fn help_text() -> String {
         "  -q, --queries <usize>",
         "      --k <usize>",
         "      --nlist <usize>",
+        "      --data-nbits, --rabitq-data-nbits <u8>",
         "      --nbits, --rabitq-nbits <u8 in [0,8]>",
         "      --hnsw-m <usize>",
         "      --ef-build <usize>",
@@ -287,7 +299,7 @@ fn bench_ivf_rabitq(
     index.train(train)?;
     index.add_with_ids(base, ids)?;
     index.set_nprobe((cfg.nlist / 16).max(1).min(64))?;
-    index.set_nbits(cfg.rabitq_nbits)?;
+    index.set_nbits_both(cfg.rabitq_data_nbits, cfg.rabitq_nbits)?;
     let build_ms = build_start.elapsed().as_secs_f64() * 1_000.0;
 
     let search_start = Instant::now();
@@ -375,6 +387,7 @@ fn print_report(cfg: &BenchConfig, rows: &[BenchResult]) {
         cfg.queries,
         cfg.k,
         cfg.nlist,
+        cfg.rabitq_data_nbits,
         cfg.rabitq_nbits,
         cfg.hnsw_m,
         cfg.hnsw_ef_build,

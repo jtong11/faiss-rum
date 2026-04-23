@@ -571,6 +571,34 @@ impl IvfRaBitQIndex {
         self.inner.set_nprobe(nprobe)
     }
 
+    /// Sets query quantization bits used during search (qb in Faiss).
+    ///
+    /// Valid range: [0, 8]. 0 disables query quantization.
+    pub fn set_query_nbits(&mut self, nbits: u8) -> Result<(), FaissError> {
+        self.set_nbits(nbits)
+    }
+
+    /// Sets data/code bits for RaBitQ.
+    ///
+    /// RaBitQ database codes are fixed by design to 1-bit signs (plus factors),
+    /// so this value must be 1.
+    pub fn set_data_nbits(&mut self, nbits: u8) -> Result<(), FaissError> {
+        if nbits != 1 {
+            return Err(FaissError::InvalidArgument(
+                "RaBitQ data bits are fixed to 1 bit per dimension; use data_nbits=1".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Sets both query bits and data bits in one call.
+    ///
+    /// For RaBitQ, `data_nbits` must be 1 (fixed by design).
+    pub fn set_nbits_both(&mut self, query_nbits: u8, data_nbits: u8) -> Result<(), FaissError> {
+        self.set_data_nbits(data_nbits)?;
+        self.set_query_nbits(query_nbits)
+    }
+
     pub fn set_nbits(&mut self, nbits: u8) -> Result<(), FaissError> {
         if nbits > 8 {
             return Err(FaissError::InvalidArgument(
@@ -796,6 +824,10 @@ mod tests {
         let err = index
             .set_nbits(9)
             .expect_err("set_nbits(9) should fail before calling Faiss");
+        assert!(matches!(err, FaissError::InvalidArgument(_)));
+        let err = index
+            .set_data_nbits(8)
+            .expect_err("set_data_nbits(8) should fail for RaBitQ");
         assert!(matches!(err, FaissError::InvalidArgument(_)));
         Ok(())
     }

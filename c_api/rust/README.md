@@ -51,6 +51,7 @@ default settings:
 - `--k 10`
 - `--nlist 1024`
 - `--nbits 8` (IVF-RaBitQ query quantization bits)
+- `--data-nbits 1` (RaBitQ data bitwidth; fixed by algorithm)
 - `--hnsw-m 32`
 - `--ef-build 200` (HNSW efConstruction)
 - `--ef-search 128` (HNSW efSearch)
@@ -66,6 +67,7 @@ cargo run --release --bin benchmark_all -- \
   --k 10 \
   --nlist 1024 \
   --nbits 8 \
+  --data-nbits 1 \
   --hnsw-m 32 \
   --ef-build 200 \
   --ef-search 128 \
